@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+venv/
+Venv/
+venv.bak/
+.env
+!.env.local
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.coverage
+
+# FastAPI specific
+alembic/versions/
+alembic.ini
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# IDE specific (examples)
+.idea/
+.DS_Store
