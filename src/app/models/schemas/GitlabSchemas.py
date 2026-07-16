@@ -8,8 +8,9 @@ class GitLabSyncResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "status": "pending",
+                "status": "Completed",
                 "project_id": "abc-123-uuid",
+                "promoted": True,
                 "gitlab_sync_requested_at": "2026-06-25T14:30:00+00:00",
             }
         }
@@ -17,6 +18,7 @@ class GitLabSyncResponse(BaseModel):
 
     status: GitlabSyncRequestedStatusEnum = Field(..., description="Current sync status")
     project_id: str = Field(..., description="ID of the synced project")
+    promoted: str = Field(..., description="All agent systems are moved to production")
     gitlab_sync_requested_at: datetime = Field(..., description="Timestamp of the sync request")
 
 
