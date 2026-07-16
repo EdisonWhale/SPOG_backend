@@ -10,6 +10,7 @@ Flow: Router -> Service -> Repository -> AsyncDocumentRepository
 """
 
 import logging
+from uuid import UUID
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
@@ -21,6 +22,8 @@ from app.models.schemas.CommonSchemas import (
 from app.models.schemas.UseCaseSchemas import (
     PaginatedUseCasesResponse,
     UseCaseListResponse,
+    UseCaseResponse,
+    UseCaseGovernanceResponse
 )
 from app.services.UseCaseService import UseCaseService
 from app.core.firestore_client import FirestoreClient
@@ -136,3 +139,88 @@ async def list_use_cases_by_project(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list use cases",
         )
+
+@USE_CASE_ROUTER.post(
+    "/project/{project_id}",
+    response_model=UseCaseResponse,
+    summary="Create an use case for a project",
+    description=(
+        "Creates a new use case for the project identified by ``project_id``. "
+        "Returns the created use case along with its AI governance URL."
+    ),
+    responses={
+        **COMMON_ERROR_RESPONSES,
+    },
+)
+async def create_use_case(
+    project_id: UUID,
+    service: UseCaseService = Depends(get_use_case_service),
+    author: str = Depends(get_current_author),
+) -> UseCaseResponse:
+    try:
+        use_case_with_link = await service.create_use_case(str(project_id), author=author)
+        logger.info(f"Use case created successfully for project: {project_id}")
+        return use_case_with_link
+    except ValueError as e:
+        logger.warning(f"Validation error creating use case for project {project_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.exception(f"Error creating use case for project {project_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create use case",
+        )
+
+
+@USE_CASE_ROUTER.get(
+    "/{use_case_id}/link",
+    response_model=UseCaseGovernanceResponse,
+    summary="Get the link for the AI governance form",
+    description=(
+        "This endpoint to generate the read only link for the AI governance form"
+    ),
+    responses={
+        **COMMON_ERROR_RESPONSES,
+        404: {"model": CommonErrorResponse, "description": "Use case not found"},
+    },
+)
+async def generate_use_case_governance_link(
+    use_case_id: str,
+    service: UseCaseService = Depends(get_use_case_service),
+    author: str = Depends(get_current_author),
+) -> UseCaseGovernanceResponse:
+    """
+    Generate a read-only AI governance form link for the given use case.
+
+    Builds and returns a pre-populated ServiceNow AI governance URL
+    for the use case identified by ``use_case_id``.
+
+    Returns a response containing the generated ``link``.
+    """
+    try:
+        governance_form_url = await service.get_ai_governance_url(use_case_id, author)
+        logger.info(
+            f"Generated AI governance link for use case {use_case_id}"
+        )
+        return UseCaseGovernanceResponse(governance_form_url=governance_form_url)
+    except ValueError as e:
+        logger.warning(f"Validation error while generating AI governance form url for use_case id: {use_case_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException as e:
+        logger.warning(f"Use case not found for id: {use_case_id}: {str(e.detail)}")
+        raise
+    except Exception as e:
+        logger.exception(
+            f"Error while generating the link for the use case {use_case_id}: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate AI governance form link",
+        )
+
