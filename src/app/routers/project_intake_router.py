@@ -265,7 +265,7 @@ async def get_project_agents(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project {project_id} not found",
             )
-        agents = await service.get_agents_by_project(str(project_id))
+        agents = project["agents"]
         logger.info(f"Retrieved {len(agents)} agents for project {project_id}")
         return agents
     except HTTPException:
