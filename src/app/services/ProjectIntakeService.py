@@ -8,9 +8,9 @@ Flow: Router -> Service -> Repository -> AsyncDocumentRepository
 """
 
 import logging
+import asyncio
 from typing import List, Optional, Dict, Any
 from google.cloud.firestore import AsyncClient
-from datetime import datetime, timezone
 from app.models.project.Project import Project
 from app.models.project.DraftProject import DraftProject
 from app.models.project.ProjectUpdate import ProjectUpdate, AgentUpdate
@@ -21,35 +21,15 @@ from app.repositories.ProjectRepository import ProjectRepository
 from app.repositories.AgentRepository import AgentRepository
 from app.repositories.DraftProjectRepository import DraftProjectRepository
 from app.repositories.DraftAgentRepository import DraftAgentRepository
-from app.services.GitlabService import gitlab_service
-from app.models.schemas.GitlabSchemas import GitLabSyncResponse
-from app.enum.ProjectEnum import GitlabSyncRequestedStatusEnum
-
+from app.services.GitlabService import GitLabService
+from app.models.schemas.CommonSchemas import DuplicateAgentNameError, DuplicateProjectNameError
+from app.utils.helpers.common_helpers import assert_owner
+from app.enum import EnvironmentEnum
 
 
 from app.utils.cursor_utils import cursor_encoder
 
 logger = logging.getLogger(__name__)
-
-
-class NotAuthorizedError(Exception):
-    """Raised when a user attempts to edit or delete an entity they do not own."""
-
-
-class DuplicateProjectNameError(Exception):
-    """Raised when a project name violates a uniqueness rule.
-
-    - Published projects must have a name unique across the whole collection.
-    - Draft projects must have a name unique per author.
-    """
-
-
-class DuplicateAgentNameError(Exception):
-    """Raised when an agent name is not unique within its parent project.
-
-    Agent names must be unique within a single project (published or draft);
-    the same name may be reused under a different project.
-    """
 
 
 class ProjectIntakeService:
@@ -66,22 +46,6 @@ class ProjectIntakeService:
         self.draft_project_repo = DraftProjectRepository(db)
         self.draft_agent_repo = DraftAgentRepository(db)
 
-    @staticmethod
-    def _assert_owner(
-        owner: Optional[str], author: Optional[str], entity: str, entity_id: str
-    ) -> None:
-        """Ensure the acting ``author`` owns the entity before edit/delete.
-
-        Raises:
-            NotAuthorizedError: If ``author`` is set and does not match ``owner``.
-        """
-        # When author is not provided (auth resolved upstream) skip the check.
-        if author is None:
-            return
-        if (owner or "").strip().lower() != author.strip().lower():
-            raise NotAuthorizedError(
-                f"User '{author}' is not authorized to modify {entity} {entity_id}"
-            )
 
     @staticmethod
     def _assert_unique_agent_names(
@@ -200,17 +164,54 @@ class ProjectIntakeService:
                     # Ensure agent has correct project_id and is stored under
                     # Projects/{project_id}/Agents/{agent_id}.
                     agent.project_id = created_project.id
-                    created_agents.append(
-                        await self.agent_repo.create(
-                            agent, project_id=created_project.id
-                        )
+                    created_agent  = await self.agent_repo.create(
+                        agent, project_id=created_project.id
                     )
+                    created_agents.append(created_agent)
+                    if created_agent.gitlab_repo_url:
+                        gitlab_service = GitLabService(self.db)
+                        asyncio.create_task(
+                            gitlab_service.resolve_and_patch_gitlab_project_id(
+                                agent_id=created_agent.id,
+                                project_id=created_project.id,
+                                repo_url=created_agent.gitlab_repo_url,
+                            )
+                        )
                 logger.info(f"Created {len(agents)} agents for project {created_project.id}")
-
-            return {"project": created_project, "agents": created_agents}
+            updated_project = await self._update_project_is_agent_system_staged(created_project.id)
+            return {"project": updated_project if updated_project else created_project, "agents": created_agents}
         except Exception as e:
             logger.exception(f"Error creating project: {str(e)}")
             raise
+
+
+    async def _update_project_is_agent_system_staged(self, project_id: str) -> Optional[Project]:
+        """
+        Checks if ALL agents under the project have environment=Staging.
+        If yes, sets project.is_agent_system_staged = True.
+        """
+        try:
+            project = await self.project_repo.get(project_id)
+            agents = await self.agent_repo.get_by_project(project_id)
+
+            if not agents:
+                project.is_agent_system_staged = False
+            else:
+                all_staged = all(
+                    agent.environment in (EnvironmentEnum.STAGING, EnvironmentEnum.PRODUCTION)
+                    for agent in agents
+                )
+                project.is_agent_system_staged = all_staged
+
+            await self.project_repo.update(project)
+            logger.info(
+                f"Project {project_id} → is_agent_system_staged={project.is_agent_system_staged} "
+                f"({len(agents)} agents checked)"
+            )
+            return project
+        except Exception as e:
+            logger.error(f"❌ Failed to update is_agent_system_staged for project {project_id}: {e}")
+            return None
 
     async def list_projects_paginated(
         self,
@@ -597,7 +598,7 @@ class ProjectIntakeService:
                 return None
 
             # Only the creator may edit the project
-            self._assert_owner(existing_project.author, author, "project", project_id)
+            assert_owner(existing_project.author, author, "project", project_id)
 
             # Merge only the fields the client actually sent
             changed = project.model_dump(exclude_unset=True, exclude_none=True)
@@ -626,7 +627,9 @@ class ProjectIntakeService:
             # Upsert agents and return only those updated/created in this request
             affected_agents = await self._upsert_agents(project_id, agents, author=author)
 
-            return {"project": updated_project, "agents": affected_agents}
+            updated = await self._update_project_is_agent_system_staged(project_id)
+
+            return {"project": updated if updated else updated_project, "agents": affected_agents}
         except Exception as e:
             logger.exception(f"Error updating project {project_id}: {str(e)}")
             raise
@@ -654,15 +657,14 @@ class ProjectIntakeService:
         for agent_update in agents:
             changed = agent_update.model_dump(exclude_unset=True, exclude_none=True)
             agent_id = changed.pop("id", None)
-            changed.pop("author", None)  # author is server-controlled
-
+            changed.pop("author", None)  # author is server-controlled        
             if agent_id:
                 existing_agent = await self.agent_repo.get(
                     agent_id, project_id=project_id
                 )
                 if existing_agent and str(existing_agent.project_id) == project_id:
                     # Only the creator may edit an existing agent
-                    self._assert_owner(
+                    assert_owner(
                         existing_agent.author, author, "agent", agent_id
                     )
                     merged_agent = existing_agent.model_copy(update=changed)
@@ -670,11 +672,22 @@ class ProjectIntakeService:
                     merged_agent.project_id = project_id
                     if author:
                         merged_agent.author = author
-                    affected.append(
-                        await self.agent_repo.update(
-                            merged_agent, project_id=project_id
-                        )
+                    if len(changed["gitlab_repo_url"]) <= 0:
+                        changed["gitlab_project_id"] = None
+                        
+                    updated_agent = await self.agent_repo.update(
+                        merged_agent, project_id=project_id
                     )
+                    affected.append(updated_agent)
+                    if "gitlab_repo_url" in changed:
+                        gitlab_service = GitLabService(self.db)
+                        asyncio.create_task(
+                            gitlab_service.resolve_and_patch_gitlab_project_id(
+                                agent_id=updated_agent.id,
+                                project_id=project_id,
+                                repo_url=updated_agent.gitlab_repo_url,
+                            )
+                        )
                     logger.info(
                         f"Agent {agent_id} updated with fields: {list(changed.keys())}"
                     )
@@ -720,7 +733,7 @@ class ProjectIntakeService:
                 return False
 
             # Only the creator may delete the project
-            self._assert_owner(existing_project.author, author, "project", project_id)
+            assert_owner(existing_project.author, author, "project", project_id)
 
             # Delete all associated agents
             agents = await self.agent_repo.get_by_project(project_id)
@@ -760,10 +773,11 @@ class ProjectIntakeService:
                 return False
 
             # Only the creator may delete the agent
-            self._assert_owner(agent.author, author, "agent", agent_id)
+            assert_owner(agent.author, author, "agent", agent_id)
 
             deleted = await self.agent_repo.delete(agent_id, project_id=project_id)
             logger.info(f"Agent {agent_id} deleted from project {project_id}")
+            await self._update_project_is_agent_system_staged(project_id)
             return deleted
         except Exception as e:
             logger.exception(
@@ -929,7 +943,7 @@ class ProjectIntakeService:
                 return None
 
             # Only the creator may read the draft project
-            self._assert_owner(project.author, author, "draft project", draft_project_id)
+            assert_owner(project.author, author, "draft project", draft_project_id)
 
             agents = await self.draft_agent_repo.get_by_project(draft_project_id)
 
@@ -984,7 +998,7 @@ class ProjectIntakeService:
                 return None
 
             # Only the creator may read the draft agent
-            self._assert_owner(agent.author, author, "draft agent", agent_id)
+            assert_owner(agent.author, author, "draft agent", agent_id)
 
             return agent.to_dict(
                 to_camel=True,
@@ -1031,7 +1045,7 @@ class ProjectIntakeService:
                 return None
 
             # Only the creator may edit the draft project
-            self._assert_owner(
+            assert_owner(
                 existing_project.author, author, "draft project", draft_project_id
             )
 
@@ -1107,7 +1121,7 @@ class ProjectIntakeService:
                 )
                 if existing_agent and str(existing_agent.project_id) == draft_project_id:
                     # Only the creator may edit an existing draft agent
-                    self._assert_owner(
+                    assert_owner(
                         existing_agent.author, author, "draft agent", agent_id
                     )
                     merged_agent = existing_agent.model_copy(update=changed)
@@ -1165,7 +1179,7 @@ class ProjectIntakeService:
                 return False
 
             # Only the creator may delete the draft project
-            self._assert_owner(
+            assert_owner(
                 existing_project.author, author, "draft project", draft_project_id
             )
 
@@ -1211,7 +1225,7 @@ class ProjectIntakeService:
                 return False
 
             # Only the creator may delete the draft agent
-            self._assert_owner(agent.author, author, "draft agent", agent_id)
+            assert_owner(agent.author, author, "draft agent", agent_id)
 
             deleted = await self.draft_agent_repo.delete(
                 agent_id, project_id=draft_project_id
@@ -1266,7 +1280,7 @@ class ProjectIntakeService:
                 return None
 
             # Only the creator may publish the draft project
-            self._assert_owner(
+            assert_owner(
                 draft_project.author, author, "draft project", draft_project_id
             )
 
@@ -1335,167 +1349,12 @@ class ProjectIntakeService:
             # Delete draft project
             await self.draft_project_repo.delete(draft_project_id)
             logger.info(f"Deleted draft project {draft_project_id}")
-
-            return {"project": created_project, "agents": created_agents}
+            updated_project = await self._update_project_is_agent_system_staged(created_project.id)
+            return {"project": updated_project if updated_project else created_project, "agents": created_agents}
         except Exception as e:
             logger.exception(f"Error publishing draft project {draft_project_id}: {str(e)}")
             raise
 
 
-    async def trigger_gitlab_sync(
-        self, project_id: str, author: Optional[str] = None
-    ) -> GitLabSyncResponse:
-        """
-        Trigger an on-demand GitLab sync for a specific project as a background task.
+    
 
-        Conditions required:
-        - Author must be the project owner
-        - active=False AND locked=True
-        - gitlab_sync_requested_status is None or COMPLETED (allows re-trigger)
-
-        Raises:
-            ValueError: If project conditions not met
-            NotAuthorizedError: If author does not own the project
-        """
-        project = await self.project_repo.get(project_id)
-        if not project:
-            return None
-
-        # ── Only the creator may trigger the sync ─────────────────────────────
-        self._assert_owner(project.author, author, "project", project_id)
-
-        # ── Condition: active and locked ──────────────────────────────────────
-        if project.active is True:
-            raise ValueError(
-                "GitLab sync requires project to be inactive (active=False)."
-            )
-        if project.locked is False:
-            raise ValueError(
-                "GitLab sync requires project to be locked (locked=True)."
-            )
-
-        # ── Condition: no sync already in progress ────────────────────────────
-        sync_status = project.gitlab_sync_requested_status
-        blocked_statuses = {
-            GitlabSyncRequestedStatusEnum.PENDING,
-            GitlabSyncRequestedStatusEnum.RUNNING,
-        }
-        if sync_status in blocked_statuses:
-            raise ValueError(
-                f"GitLab sync is already in progress (status={sync_status.value}). "
-                "Please wait until the current sync completes before re-triggering."
-            )
-
-        # ── Allowed: None or COMPLETED → proceed ─────────────────────────────
-        project.gitlab_sync_requested_at = datetime.now(timezone.utc)
-        project.gitlab_sync_requested_status = GitlabSyncRequestedStatusEnum.PENDING
-        await self.project_repo.update(project)
-
-        logger.info(
-            f"🕐 GitLab sync PENDING for project {project_id} by '{author}' "
-            f"(previous_status={sync_status.value if sync_status else None})"
-        )
-
-        return GitLabSyncResponse(
-            status=GitlabSyncRequestedStatusEnum.PENDING,
-            project_id=project_id,
-            gitlab_sync_requested_at=project.gitlab_sync_requested_at,
-        )
-
-
-    async def run_gitlab_sync(self, project_id: str, author: Optional[str] = None) -> None:
-        """
-        Background task: executes the actual GitLab sync for a project.
-
-        Flow:
-        1. Sets status → RUNNING
-        2. Fetches staging agents → calls GitLab API → promotes to Production
-        3. Sets status → COMPLETED and active=True if all promoted
-        """
-
-        try:
-            project = await self.project_repo.get(project_id)
-            if not project:
-                logger.error(f"❌ Background sync: project {project_id} not found.")
-                return
-
-            # ── Set status → RUNNING ──────────────────────────────────────────
-            project.gitlab_sync_requested_status = GitlabSyncRequestedStatusEnum.RUNNING
-            await self.project_repo.update(project)
-            logger.info(f"🔄 GitLab sync RUNNING for project {project_id}")
-
-            # ── Fetch staging agents ──────────────────────────────────────────
-            all_agents = await self.agent_repo.get_by_project(project_id)
-            staging_agents = [
-                a for a in all_agents if getattr(a, "environment", None) == "Staging"
-            ]
-
-            if not staging_agents:
-                logger.warning(f"⚠️ No staging agents found for project {project_id}.")
-                project.gitlab_sync_requested_status = GitlabSyncRequestedStatusEnum.COMPLETED
-                await self.project_repo.update(project)
-                return
-
-            # ── Process each agent ────────────────────────────────────────────
-            promoted, skipped, failed = [], [], []
-
-            for agent in staging_agents:
-                gitlab_project_id = getattr(agent, "gitlab_project_id", None)
-
-                if not gitlab_project_id:
-                    logger.warning(f"⚠️ Agent {agent.id} has no gitlab_project_id, skipping.")
-                    skipped.append(str(agent.id))
-                    continue
-
-                try:
-                    result = gitlab_service.get_code_version_and_release_date(
-                        str(gitlab_project_id)
-                    )
-                    code_version = result.get("code_version")
-                    release_date = result.get("release_date")
-
-                    if not code_version:
-                        logger.info(f"⚠️ Agent {agent.id} has no release yet, skipping.")
-                        skipped.append(str(agent.id))
-                        continue
-
-                    agent.code_version = code_version
-                    agent.release_date = release_date
-                    agent.environment = "Production"
-
-                    await self.agent_repo.update(
-                        agent,
-                        project_id=project_id,
-                        excludes={"project_id": True}
-                    )
-                    promoted.append(str(agent.id))
-                    logger.info(f"✅ Agent {agent.id} promoted → {code_version} | {release_date}")
-
-                except Exception as e:
-                    logger.error(f"❌ Failed for agent {agent.id}: {e}")
-                    failed.append(str(agent.id))
-
-            # ── Update project → COMPLETED ────────────────────────────────────
-            project.gitlab_sync_requested_status = GitlabSyncRequestedStatusEnum.COMPLETED
-
-            if promoted and not failed and not skipped:
-                project.active = True
-                logger.info(f"🏁 Project {project_id} marked active=True")
-
-            await self.project_repo.update(project)
-
-            logger.info(
-                f"✅ GitLab sync COMPLETED for project {project_id} by '{author}' | "
-                f"promoted={len(promoted)} skipped={len(skipped)} failed={len(failed)}"
-            )
-
-        except Exception as e:
-            logger.exception(f"❌ Background GitLab sync failed for project {project_id}: {e}")
-            # Best-effort: mark status back to allow retry
-            try:
-                project = await self.project_repo.get(project_id)
-                if project:
-                    project.gitlab_sync_requested_status = GitlabSyncRequestedStatusEnum.PENDING
-                    await self.project_repo.update(project)
-            except Exception:
-                pass
