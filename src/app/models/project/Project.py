@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import datetime
 from typing import ClassVar, Optional
 from pydantic import Field, field_validator
 from app.models.base.SpogBaseModel import SpogBaseModel
@@ -90,11 +90,19 @@ class Project(SpogBaseModel):
         default=False,
         description="After an use case get submitted then project becomes locked",
     )
+    is_agent_system_staged: Optional[bool] = Field(
+        default=False,
+        description="Check is the agent system staged",
+    )
+    is_use_case_pending: Optional[bool] = Field(
+        default=False,
+        description="Check whether an use case is pending or not",
+    )
     gitlab_sync_requested_status: Optional[GitlabSyncRequestedStatusEnum] = Field(
         default=None,
         description="Status of the last GitLab sync request.",
     )
-    gitlab_sync_requested_at: Optional[date] = Field(
+    gitlab_sync_requested_at: Optional[datetime] = Field(
         default=None,
         description="Timestamp when the user last requested an on-demand GitLab sync.",
     )
