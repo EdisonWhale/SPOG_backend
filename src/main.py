@@ -11,6 +11,7 @@ from app.routers.project_intake_router import PROJECT_INTAKE_ROUTER
 from app.routers.draft_project_router import DRAFT_PROJECT_ROUTER
 from app.routers.use_case_router import USE_CASE_ROUTER
 from app.routers.gitlab_sync_router import GITLAB_SYNC_ROUTER
+from app.routers.webhook_router import WEBHOOK_ROUTER
 
 # ---
 from app.routers.auth_router import AUTH_ROUTER
@@ -152,7 +153,8 @@ app.include_router(router=DRAFT_PROJECT_ROUTER, prefix="/projects/draft")
 app.include_router(router=PROJECT_INTAKE_ROUTER, prefix="/projects")
 app.include_router(router=USE_CASE_ROUTER, prefix="/use-cases")
 app.include_router(router=AUTH_ROUTER, prefix="/auth")
-app.include_router(router=GITLAB_SYNC_ROUTER, prefix="/internal/gitlab")
+app.include_router(router=WEBHOOK_ROUTER, prefix="/webhook")
+app.include_router(router=GITLAB_SYNC_ROUTER, prefix="/gitlab")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8081)
