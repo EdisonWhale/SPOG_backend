@@ -1,10 +1,11 @@
 """
 Use Case Router
 
-Read-only endpoints for AI Governance use cases.
+Endpoints for AI Governance use cases.
 
-Use cases are created and updated internally by the system (no create/update/
-delete routes). These endpoints only expose fetching use cases.
+Exposes endpoints for listing, creating, and managing use cases.
+Use cases are created per project and go through an approval workflow
+before being eligible for GitLab sync.
 
 Flow: Router -> Service -> Repository -> AsyncDocumentRepository
 """
@@ -46,7 +47,7 @@ def get_use_case_service() -> UseCaseService:
     summary="List use cases (paginated)",
     description=(
         "Lists AI Governance use cases using cursor pagination. Optionally "
-        "filter by project_id."
+        "filter by project_id or search by project_id, usecase_id, name, vp_sponsor, or vp_sponsor_email."
     ),
     responses={
         **COMMON_ERROR_RESPONSES,
@@ -60,27 +61,44 @@ async def list_use_cases(
     cursor: Optional[str] = Query(
         None, description="Encrypted pagination cursor from a previous response."
     ),
-    project_id: Optional[str] = Query(
-        None, description="Filter use cases mapped to this project."
+    search: Optional[str] = Query(
+        None,
+        description=(
+            "Optional search term, search by usecase_id, project_id, name, vp_sponsor, vp_sponsor_email"
+        ),
     ),
+    project_id: Optional[str] = Query(None, description="Filter use cases mapped to this project."),
     service: UseCaseService = Depends(get_use_case_service),
     author: str = Depends(get_current_author),
 ) -> PaginatedUseCasesResponse:
     """
     List use cases with cursor pagination.
 
-    - Optionally filter by ``project_id``.
+    - If ``search`` is provided, performs partial matching across
+    ``usecase_id``, ``project_id``, ``name``, ``vp_sponsor``, and ``vp_sponsor_email``.
+    - If ``project_id`` is provided, filters results to that project only.
     - Use the returned ``nextCursor`` / ``prevCursor`` to navigate pages.
-    - ``total`` reflects the full filtered result set, not just the page.
+    - ``total`` reflects the full filtered result set, not just the current page.
     """
+
     try:
-        filters = {"project_id": project_id} if project_id else None
+        if search and search.strip():
+            result = await service.search_use_case_paginated(
+                term=search,
+                page_size=page_size,
+                cursor=cursor,
+            )
+            logger.info(
+                f"Searched use cases for '{search}': {len(result.items)} items"
+            )
+            return result
+
         result = await service.list_use_cases_paginated(
+            project_id=project_id,
             page_size=page_size,
             cursor=cursor,
-            filters=filters,
         )
-        logger.info(f"Listed {len(result['items'])} use cases")
+        logger.info(f"Listed {len(result.items)} use cases")
         return result
     except ValueError as e:
         # Raised by the repository for an invalid/tampered cursor.
@@ -99,8 +117,8 @@ async def list_use_cases(
     response_model=UseCaseListResponse,
     summary="List use cases for a project",
     description=(
-        "Lists all use cases mapped to a specific project. This endpoint is "
-        "not paginated and returns the complete set of use cases for the project."
+        "Lists all use cases mapped to a specific project. "
+        "Returns the complete non-paginated set of use cases for the given project."
     ),
     responses={
         **COMMON_ERROR_RESPONSES,
@@ -114,9 +132,10 @@ async def list_use_cases_by_project(
     """
     List all use cases mapped to ``project_id`` (non-paginated).
 
-    Returns the complete set of use cases for the project. ``total`` is the
-    count of returned items.
+    Returns the complete set of use cases for the given project.
+    ``total`` reflects the count of returned items.
     """
+
     try:
         use_cases = await service.get_use_cases_by_project(project_id)
         items = [
@@ -143,10 +162,11 @@ async def list_use_cases_by_project(
 @USE_CASE_ROUTER.post(
     "/project/{project_id}",
     response_model=UseCaseResponse,
-    summary="Create an use case for a project",
+    summary="Create a use case for a project",
     description=(
         "Creates a new use case for the project identified by ``project_id``. "
-        "Returns the created use case along with its AI governance URL."
+        "A project may only have one use case. Returns the created use case "
+        "along with its AI governance URL."
     ),
     responses={
         **COMMON_ERROR_RESPONSES,
@@ -157,6 +177,18 @@ async def create_use_case(
     service: UseCaseService = Depends(get_use_case_service),
     author: str = Depends(get_current_author),
 ) -> UseCaseResponse:
+    """
+    Create a new use case for the project identified by ``project_id``.
+
+    - Only one use case is allowed per project.
+    - The use case is created in a pending state and must go through
+    an approval workflow before being eligible for GitLab sync.
+    - Returns the created use case along with its AI governance URL.
+
+    Raises:
+        400: If a use case already exists for the project or validation fails.
+    """
+
     try:
         use_case_with_link = await service.create_use_case(str(project_id), author=author)
         logger.info(f"Use case created successfully for project: {project_id}")
@@ -180,7 +212,8 @@ async def create_use_case(
     response_model=UseCaseGovernanceResponse,
     summary="Get the link for the AI governance form",
     description=(
-        "This endpoint to generate the read only link for the AI governance form"
+        "Generates a read-only pre-populated ServiceNow AI governance form link "
+        "for the use case identified by ``use_case_id``."
     ),
     responses={
         **COMMON_ERROR_RESPONSES,
@@ -193,13 +226,16 @@ async def generate_use_case_governance_link(
     author: str = Depends(get_current_author),
 ) -> UseCaseGovernanceResponse:
     """
-    Generate a read-only AI governance form link for the given use case.
+    Generate a read-only AI governance form link for ``use_case_id``.
 
     Builds and returns a pre-populated ServiceNow AI governance URL
-    for the use case identified by ``use_case_id``.
+    for the specified use case.
 
-    Returns a response containing the generated ``link``.
+    Raises:
+        400: If validation fails.
+        404: If the use case does not exist.
     """
+
     try:
         governance_form_url = await service.get_ai_governance_url(use_case_id, author)
         logger.info(
