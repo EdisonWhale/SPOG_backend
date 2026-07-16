@@ -165,6 +165,36 @@ class AsyncDocumentRepository(ABC, Generic[T]):
 
         results: List[T] = await self._get_results_from_query(async_query)
         return results
+
+    async def get_by_filters(
+        self,
+        filters: List[Tuple[str, str, Any]],  # (field, operator, value)
+        limit: Optional[int] = None,
+        order_by: Optional[str] = None,
+        sort_direction: Query = Query.DESCENDING,
+    ) -> List[T]:
+        """
+        Example:
+            await repo.get_by_filters([
+                ("status", "==", "active"),
+                ("created_utc", ">=", some_date),
+                ("score", "<", 100)
+            ])
+        """
+        async_query: AsyncQuery = self.collection_ref
+
+        for field_name, operator, value in filters:
+            if value is not None:
+                async_query = async_query.where(field_name, operator, value)
+
+        if order_by:
+            async_query = async_query.order_by(order_by, direction=sort_direction)
+
+        if limit:
+            async_query = async_query.limit(limit)
+
+        return await self._get_results_from_query(async_query)
+
     
     async def get_by_field_generator(self, field_name: str, operator: str, value: Any, limit: Optional[int] = None) -> AsyncGenerator[T, None]:
         async_query: AsyncQuery = self.collection_ref.where(field_name, operator, value)
