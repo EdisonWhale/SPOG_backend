@@ -1,6 +1,7 @@
 from .AgentEnum import PlatformEnum, EnvironmentEnum, DataLevel
-from .UseCaseEnum import UseCaseStatus
+from .UseCaseEnum import UseCaseStatusEnum
 from .ProjectEnum import GitlabSyncRequestedStatusEnum
+from .JobEnum import JobTriggerEnum, JobStatusEnum
 
 
 __all__ = [
@@ -9,7 +10,10 @@ __all__ = [
     'DataLevel',
     'EnvironmentEnum',
     # Use Case Enum
-    'UseCaseStatus',
+    'UseCaseStatusEnum',
     # Project Enum
-    'GitlabSyncRequestedStatusEnum'
+    'GitlabSyncRequestedStatusEnum',
+    # Job Enum
+    'JobTriggerEnum',
+    'JobStatusEnum',
 ]
