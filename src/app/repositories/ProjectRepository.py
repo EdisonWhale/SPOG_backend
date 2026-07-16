@@ -13,6 +13,7 @@ from google.cloud.firestore_v1.field_path import FieldPath
 
 from app.models.project.Project import Project
 from app.repositories.AsyncDocumentRepository import AsyncDocumentRepository
+from app.models.schemas.ProjectIntakeSchemas import PaginatedProjects
 
 logger = logging.getLogger(__name__)
 
@@ -120,3 +121,27 @@ class ProjectRepository(AsyncDocumentRepository[Project]):
             )
             raise
 
+
+    async def get_all_projects_paginated(
+        self,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None, 
+    ) -> PaginatedProjects:
+
+        try:
+                
+            items, next_cursor, prev_cursor = await self.get_all_paginated(
+                page_size=page_size,
+                cursor=cursor,
+            )
+            total = await self.count_all()
+
+            return PaginatedProjects(
+                items=items,
+                total=total,
+                next_cursor=next_cursor,
+                prev_cursor=prev_cursor
+            )
+        except Exception as e:
+            logger.exception(f"Error listing projects: {str(e)}")
+            raise
