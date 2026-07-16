@@ -27,7 +27,7 @@ class PaginatedUseCasesResponse(CustomBaseModel):
     current page).
     """
 
-    items: List[Dict[str, Any]] = []
+    items: List[UseCase] = []
     total: int = 0
     next_cursor: Optional[str] = None
     prev_cursor: Optional[str] = None
@@ -41,5 +41,13 @@ class UseCaseListResponse(CustomBaseModel):
     full count of returned items.
     """
 
-    items: List[Dict[str, Any]] = []
+    items: List[UseCase] = []
     total: int = 0
+
+class UseCaseGovernanceResponse(CustomBaseModel):
+    # return AI governace link for the use case
+    governance_form_url: Optional[str] = None
+
+class UseCaseResponse(UseCaseGovernanceResponse):
+    # return use case data with extra url that i needed
+    use_case: UseCase
