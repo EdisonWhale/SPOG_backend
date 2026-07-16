@@ -11,7 +11,7 @@ import logging
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from pydantic import ValidationError
 
 from app.models.project.Project import Project
@@ -28,15 +28,14 @@ from app.models.schemas.ProjectIntakeSchemas import (
     ProjectWithAgentsResponse,
     PaginatedProjectsResponse,
 )
-from app.services.ProjectIntakeService import (
-    ProjectIntakeService,
+from app.services.ProjectIntakeService import ProjectIntakeService
+from app.models.schemas.CommonSchemas import (
     NotAuthorizedError,
     DuplicateProjectNameError,
     DuplicateAgentNameError,
 )
 from app.core.firestore_client import FirestoreClient
 from app.core.auth import get_current_author
-from app.models.schemas.GitlabSchemas import GitLabSyncResponse
 
 logger = logging.getLogger(__name__)
 
@@ -474,53 +473,4 @@ async def delete_project_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete agent",
-        )
-
-
-@PROJECT_INTAKE_ROUTER.post(
-    "/{project_id}/sync-project-status",
-    response_model=GitLabSyncResponse,
-    summary="Trigger on-demand GitLab sync for a project",
-    description=(
-        "Syncs staging agents to production for a specific project. "
-        "Project must be locked=True and active=False to proceed. "
-        "Returns immediately with status=PENDING; sync runs in background."
-    ),
-    responses={
-        **COMMON_ERROR_RESPONSES,
-        404: {"model": CommonErrorResponse, "description": "Project not found"},
-        409: {"model": CommonErrorResponse, "description": "Project conditions not met"},
-    },
-)
-async def trigger_gitlab_sync(
-    project_id: UUID,
-    background_tasks: BackgroundTasks,
-    service: ProjectIntakeService = Depends(get_project_intake_service),
-    author: str = Depends(get_current_author),
-) -> GitLabSyncResponse:
-    try:
-        # Returns immediately with PENDING status
-        response = await service.trigger_gitlab_sync(str(project_id), author=author)
-        if not response:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project {project_id} not found",
-            )
-
-        # Actual sync runs in background
-        background_tasks.add_task(service.run_gitlab_sync, str(project_id), author)
-
-        logger.info(f"🕐 GitLab sync queued for project {project_id} by {author}")
-        return response
-
-    except ValueError as e:
-        logger.warning(f"GitLab sync condition not met for project {project_id}: {e}")
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error triggering GitLab sync for project {project_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to trigger GitLab sync",
         )
