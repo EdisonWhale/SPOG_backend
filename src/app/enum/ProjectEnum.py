@@ -5,4 +5,5 @@ class GitlabSyncRequestedStatusEnum(str, Enum):
 
     PENDING = "Pending"
     RUNNING = "Running"
+    FAILED = "Failed"
     COMPLETED = "Completed"
