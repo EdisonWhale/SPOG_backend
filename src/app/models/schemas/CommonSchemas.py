@@ -105,3 +105,23 @@ class DeleteResponse(BaseModel):
 
     deleted: Optional[bool] = True
     message: str = Field(..., description="Deletion confirmation message")
+
+
+class NotAuthorizedError(Exception):
+    """Raised when a user attempts to edit or delete an entity they do not own."""
+
+
+class DuplicateProjectNameError(Exception):
+    """Raised when a project name violates a uniqueness rule.
+
+    - Published projects must have a name unique across the whole collection.
+    - Draft projects must have a name unique per author.
+    """
+
+
+class DuplicateAgentNameError(Exception):
+    """Raised when an agent name is not unique within its parent project.
+
+    Agent names must be unique within a single project (published or draft);
+    the same name may be reused under a different project.
+    """
