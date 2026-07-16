@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import logging
 from pydantic import ValidationError
-from typing import AsyncGenerator, Optional, TypeVar, Generic, Type, List, Dict, Any, Tuple
+from typing import AsyncGenerator, Optional, TypeVar, Generic, Type, List, Dict, Any, Tuple, Union
 from google.api_core import exceptions as GCPExceptions
 from google.cloud.firestore import (
     AsyncClient, 
@@ -11,6 +11,7 @@ from google.cloud.firestore import (
     AsyncQuery,
     DocumentSnapshot
 )
+from google.cloud.firestore_v1.base_query import FieldFilter, Or, And, BaseCompositeFilter
 from app.utils.cursor_utils import cursor_encoder
 from typing import ClassVar, Dict
 
@@ -213,7 +214,7 @@ class AsyncDocumentRepository(ABC, Generic[T]):
         results: List[T] = await self._get_results_from_query(async_query)
         return results
 
-    async def count_all(self, filters: Optional[Dict[str, Any]] = None) -> int:
+    async def count_all(self, filters: Optional[Union[List[Tuple[str, str, Any]], BaseCompositeFilter]] = None) -> int:
         """
         Count documents in the collection with optional filters.
 
@@ -222,9 +223,11 @@ class AsyncDocumentRepository(ABC, Generic[T]):
         """
         async_query: AsyncQuery = self.collection_ref
         if filters:
-            for field_name, value in filters.items():
-                if value is not None:
-                    async_query = async_query.where(field_name, "==", value)
+            if isinstance(filters, BaseCompositeFilter):
+                async_query = async_query.where(filter=filters)
+            else:
+                for field_name, operator, value in filters:
+                    async_query = async_query.where(FieldFilter(field_name, operator, value))
 
         try:
             aggregation_query = async_query.count()
@@ -269,7 +272,7 @@ class AsyncDocumentRepository(ABC, Generic[T]):
     async def get_all_paginated(
         self, 
         page_size: Optional[int] = None,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[Union[List[Tuple[str, str, Any]], BaseCompositeFilter]] = None,
         cursor: Optional[str] = None,
         order_by: str = "created_utc",
         sort_direction = Query.DESCENDING,
@@ -315,11 +318,13 @@ class AsyncDocumentRepository(ABC, Generic[T]):
             actual_sort_direction = Query.ASCENDING if sort_direction == Query.DESCENDING else Query.DESCENDING
         
         async_query: AsyncQuery = self.collection_ref.order_by(order_by, direction=actual_sort_direction)
-        
+
         if filters:
-            for field_name, value in filters.items():
-                if value is not None:
-                    async_query = async_query.where(field_name, "==", value)
+            if isinstance(filters, BaseCompositeFilter):
+                async_query = async_query.where(filter=filters)
+            else:
+                for field_name, operator, value in filters:
+                    async_query = async_query.where(FieldFilter(field_name, operator, value))
         
         if doc_id:
             cursor_doc = await self._get_document_ref(doc_id).get()
