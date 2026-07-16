@@ -1,6 +1,6 @@
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.models import CommonErrorResponse
 from app.core.exceptions import (
@@ -9,6 +9,7 @@ from app.core.exceptions import (
     NotFoundException,
     ConflictException
 )
+from app.models.schemas.CommonSchemas import NotAuthorizedError
 from app.models import AuthorizableModel
 
 def get_authorizable_exclusions() -> dict:
@@ -178,3 +179,35 @@ ERROR_RESPONSES = {
         }
     )
 }
+
+def assert_owner(
+        owner: Optional[str], author: Optional[str], entity: str, entity_id: str
+    ) -> None:
+        """Ensure the acting ``author`` owns the entity before edit/delete.
+
+        Raises:
+            NotAuthorizedError: If ``author`` is set and does not match ``owner``.
+        """
+        # When author is not provided (auth resolved upstream) skip the check.
+        if author is None:
+            return
+        if (owner or "").strip().lower() != author.strip().lower():
+            raise NotAuthorizedError(
+                f"User '{author}' is not authorized to modify {entity} {entity_id}"
+            )
+
+
+import os
+SCHEDULER_SECRET = os.getenv("SCHEDULER_SECRET", "your-secret-token")
+
+# Auth Guard for scheduler 
+def verify_scheduler(authorization: Optional[str]) -> None:
+    if authorization != f"Bearer {SCHEDULER_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# To make chunk for a long list
+def chunk_list(lst: list, size: int):
+    """Yield list in chunks of given size."""
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
