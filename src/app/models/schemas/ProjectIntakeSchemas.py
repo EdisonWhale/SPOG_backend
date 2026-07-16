@@ -22,7 +22,7 @@ class ProjectWithAgentsResponse(CustomBaseModel):
     agents: List[Agent] = []
 
 
-class PaginatedProjectsResponse(CustomBaseModel):
+class PaginatedProjects(CustomBaseModel):
     """A page of projects with encrypted cursors for navigation.
 
     Each item is a camelCase dict. When ``includeAgents`` is requested, each
@@ -30,7 +30,20 @@ class PaginatedProjectsResponse(CustomBaseModel):
     item is the project dict itself.
     """
 
-    items: List[Dict[str, Any]] = []
+    items: List[Project] = []
+    total: int = 0
+    next_cursor: Optional[str] = None
+    prev_cursor: Optional[str] = None
+
+class PaginatedProjectsWithAgentsResponse(CustomBaseModel):
+    """A page of projects with encrypted cursors for navigation.
+
+    Each item is a camelCase dict. When ``includeAgents`` is requested, each
+    item has the shape ``{"project": {...}, "agents": [...]}``; otherwise each
+    item is the project dict itself.
+    """
+
+    items: List[ProjectWithAgentsResponse] = []
     total: int = 0
     next_cursor: Optional[str] = None
     prev_cursor: Optional[str] = None
