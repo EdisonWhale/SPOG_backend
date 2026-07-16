@@ -9,13 +9,14 @@ date from GitLab.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, Depends, HTTPException, status
+from fastapi import APIRouter, Header, Depends, HTTPException, status
 from app.services.GitlabService import GitLabService
 from app.core.auth import get_current_author
-from app.utils.helpers.common_helpers import verify_scheduler
+# from app.utils.helpers.common_helpers import verify_scheduler
 from app.core.firestore_client import FirestoreClient
 from app.models.schemas.GitlabSchemas import GitLabSyncResponse
 from app.models.schemas.CommonSchemas import (
+    NotAuthorizedError,
     CommonErrorResponse,
     COMMON_ERROR_RESPONSES,
 )
@@ -46,35 +47,29 @@ def get_gitlab_service() -> GitLabService:
 )
 async def trigger_gitlab_sync(
     project_id: str,
-    background_tasks: BackgroundTasks,
     service: GitLabService = Depends(get_gitlab_service),
     author: str = Depends(get_current_author),
 ) -> GitLabSyncResponse:
     try:
-        # Returns immediately with PENDING status
         response = await service.trigger_gitlab_sync(str(project_id), author=author)
-        if not response:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project {project_id} not found",
-            )
-
-        # Actual sync runs in background
-        background_tasks.add_task(service.run_gitlab_sync, str(project_id), author)
-
-        logger.info(f"🕐 GitLab sync queued for project {project_id} by {author}")
+        logger.info(f"✅ GitLab sync completed for project {project_id} by {author}")
         return response
 
     except ValueError as e:
-        logger.warning(f"GitLab sync condition not met for project {project_id}: {e}")
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    except HTTPException:
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except NotAuthorizedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
     except Exception as e:
-        logger.exception(f"Error triggering GitLab sync for project {project_id}: {e}")
+        logger.exception(f"❌ GitLab sync failed for project {project_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to trigger GitLab sync",
+            detail="An unexpected error occurred during GitLab sync.",
         )
 
 # ── Router ────────────────────────────────────────────────────────────────────
