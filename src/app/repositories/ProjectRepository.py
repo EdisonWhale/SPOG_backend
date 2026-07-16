@@ -22,12 +22,6 @@ FIRESTORE_IN_LIMIT = 30
 PREFIX_RANGE_END = "\uf8ff"
 
 
-def _chunk(values, size=FIRESTORE_IN_LIMIT):
-    """Yield ``values`` in lists of at most ``size`` items."""
-    for start in range(0, len(values), size):
-        yield values[start:start + size]
-
-
 class ProjectRepository(AsyncDocumentRepository[Project]):
     """
     Repository for Project entities.
