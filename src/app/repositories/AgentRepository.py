@@ -39,9 +39,6 @@ class AgentRepository(AsyncDocumentRepository[Agent]):
 
     AGENTS_SUBCOLLECTION = Agent.COLLECTION_NAME
 
-    # ``project_id`` is implied by the document path and is never persisted.
-    FIRESTORE_EXCLUDES: ClassVar[Dict[str, bool]] = {"project_id": True}
-
     def __init__(self, db: AsyncClient, project_id: Optional[str] = None):
         """Initialize AgentRepository, optionally bound to a project."""
         super().__init__(db, Agent)
