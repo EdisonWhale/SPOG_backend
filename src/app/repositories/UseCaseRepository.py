@@ -12,6 +12,7 @@ from google.cloud.firestore import AsyncClient
 
 from app.models.usecase.UseCase import UseCase
 from app.repositories.AsyncDocumentRepository import AsyncDocumentRepository
+from app.enum import UseCaseStatusEnum
 
 logger = logging.getLogger(__name__)
 
@@ -62,4 +63,23 @@ class UseCaseRepository(AsyncDocumentRepository[UseCase]):
             return use_cases
         except Exception as e:
             logger.exception(f"Error retrieving use cases by status {status}: {str(e)}")
+            raise
+
+
+    async def get_approved_first_use_case(self, project_id: str) -> UseCase:
+        try:
+            use_cases = await self.get_by_filters(
+                filters=[
+                    ("project_id", "==", project_id),
+                    ("status", "==", UseCaseStatusEnum.APPROVED),
+                    ("is_first", "==", True)
+                ],
+                limit=1
+            )
+            logger.info(f"Retrieved {len(use_cases)} use cases with project_id {project_id}")
+            if use_cases:
+                return use_cases[0]
+            return None
+        except Exception as e:
+            logger.exception(f"Error retrieving use cases by project id {project_id}: {str(e)}")
             raise
