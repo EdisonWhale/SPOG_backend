@@ -32,8 +32,8 @@ from app.models.schemas.ProjectIntakeSchemas import (
     ProjectWithAgentsResponse,
     DraftProjectWithAgentsResponse,
 )
-from app.services.ProjectIntakeService import (
-    ProjectIntakeService,
+from app.services.ProjectIntakeService import ProjectIntakeService
+from app.models.schemas.CommonSchemas import (
     NotAuthorizedError,
     DuplicateProjectNameError,
     DuplicateAgentNameError,
