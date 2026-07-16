@@ -15,11 +15,11 @@ from datetime import date
 
 from pydantic import Field
 
-from app.models.base.CustomBaseModel import CustomBaseModel, TimestampedModel
-from app.enum import UseCaseStatus
+from app.models.base.SpogBaseModel import SpogBaseModel
+from app.enum import UseCaseStatusEnum
 
 
-class UseCase(CustomBaseModel, TimestampedModel):
+class UseCase(SpogBaseModel):
     """AI Governance use case mapped to a published project.
 
     Composed from ``CustomBaseModel`` (serialization/config) and
@@ -34,18 +34,17 @@ class UseCase(CustomBaseModel, TimestampedModel):
         description="System-generated ID of the use case. Must not be supplied by the client.",
     )
     usecase_id: Optional[str] = Field(
-        ...,
-        min_length=1,
+        default=None,
         description="Use case ID (#SCTASK id). Supplied by the system as a string (not a UUID).",
     )
     name: Optional[str] = Field(
-        ...,
+        default=None,
         min_length=1,
         max_length=255,
         description="Use case name",
     )
-    status: UseCaseStatus = Field(
-        default=UseCaseStatus.PENDING,
+    status: UseCaseStatusEnum = Field(
+        default=UseCaseStatusEnum.PENDING,
         description="AI Governance status of the use case",
     )
     project_id: str = Field(
@@ -63,4 +62,28 @@ class UseCase(CustomBaseModel, TimestampedModel):
     is_first: Optional[bool] = Field(
         default=False,
         description="Is the first use case created for a project",
+    )
+    business_owner: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=100,
+        description="Business owner name"
+    )
+    business_owner_email: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=100,
+        description="Business owner email"
+    )
+    vp_sponsor: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=100,
+        description="VP sponsor name"
+    )
+    vp_sponsor_email: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=100,
+        description="VP sponsor email"
     )
