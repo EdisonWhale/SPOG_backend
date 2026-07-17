@@ -25,7 +25,9 @@ from app.repositories.ProjectRepository import ProjectRepository
 from app.repositories.AgentRepository import AgentRepository
 from app.models.schemas.UseCaseSchemas import UseCaseResponse
 from app.enum import EnvironmentEnum, UseCaseStatusEnum
+from app.models.schemas.UseCaseSchemas import PaginatedUseCasesResponse
 from app.utils.helpers.common_helpers import assert_owner
+from app.utils.cursor_utils import cursor_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -217,10 +219,10 @@ class UseCaseService:
 
     async def list_use_cases_paginated(
         self,
+        project_id: Optional[str] = None,
         page_size: Optional[int] = None,
         cursor: Optional[str] = None,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> PaginatedUseCasesResponse:
         """
         List use cases using cursor pagination.
 
@@ -240,32 +242,120 @@ class UseCaseService:
         """
         try:
             # Same filters drive both the page and the total count.
-            use_cases, next_cursor, prev_cursor = await self.use_case_repo.get_all_paginated(
+            use_cases = await self.use_case_repo.get_all_use_cases_paginated(
+                project_id=project_id,
                 page_size=page_size,
                 cursor=cursor,
-                filters=filters,
             )
-            total = await self.use_case_repo.count_all(filters=filters)
 
-            items = [
-                uc.to_dict(
-                    to_camel=True,
-                    date_format_iso=True,
-                    include_document_id=True,
-                )
-                for uc in use_cases
-            ]
-
-            logger.info(f"Listed {len(items)} of {total} use cases")
-            return {
-                "items": items,
-                "total": total,
-                "next_cursor": next_cursor,
-                "prev_cursor": prev_cursor,
-            }
+            return use_cases
         except Exception as e:
             logger.exception(f"Error listing use cases: {str(e)}")
             raise
+
+    async def search_use_case_paginated(
+        self,
+        term: str,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> PaginatedUseCasesResponse:
+        term = (term or "").strip()
+        if not term:
+            return await self.list_use_cases_paginated(
+                page_size=page_size,
+                cursor=cursor,
+            )
+        try:
+            needle = term.lower()
+
+            # Load all use cases once and match in memory
+            all_use_cases = await self.use_case_repo.get_all()
+
+            # Fields searched with partial (contains) matching
+            use_case_text_fields = (
+                "name",
+                "project_id",
+                "usecase_id",
+                "vp_sponsor",
+                "vp_sponsor_email",
+            )
+
+            def _matches_use_case(use_case) -> bool:
+                if str(use_case.id).lower() == needle:
+                    return True
+                for field_name in use_case_text_fields:
+                    if needle in (getattr(use_case, field_name, None) or "").lower():
+                        return True
+                return False
+
+            matched = [uc for uc in all_use_cases if _matches_use_case(uc)]
+
+            total = len(matched)
+            if total == 0:
+                return PaginatedUseCasesResponse(
+                    items=[],
+                    total=0,
+                    next_cursor=None,
+                    prev_cursor=None,
+                )
+
+            # Stable ordering: newest first, tie-break by id
+            matched.sort(
+                key=lambda uc: (getattr(uc, "created_utc", None), str(uc.id)),
+                reverse=True,
+            )
+
+            page = 0
+            if cursor:
+                try:
+                    cursor_data = cursor_encoder.decode_cursor_base64(cursor)
+                    page = max(0, cursor_data.page)
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    logger.warning(f"Invalid search cursor: {exc}")
+                    raise ValueError("Invalid or tampered pagination cursor")
+
+            if page_size:
+                start = page * page_size
+                end = start + page_size
+                page_use_cases = matched[start:end]
+                has_next = end < total
+                has_prev = page > 0
+            else:
+                page_use_cases = matched
+                has_next = False
+                has_prev = False
+
+            next_cursor = (
+                cursor_encoder.encode_cursor_base64(page=page + 1, direction="next")
+                if has_next
+                else None
+            )
+            prev_cursor = (
+                cursor_encoder.encode_cursor_base64(page=page - 1, direction="prev")
+                if has_prev
+                else None
+            )
+
+            logger.info(
+                f"Search '{term}' matched {total} use cases; "
+                f"returning page {page} ({len(page_use_cases)} items)"
+            )
+
+            return PaginatedUseCasesResponse(
+                items=page_use_cases,
+                total=total,
+                next_cursor=next_cursor,
+                prev_cursor=prev_cursor,
+            )
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.exception(f"Error searching use cases for term '{term}': {str(e)}")
+            raise
+
 
     async def get_use_cases_by_project(self, project_id: str) -> List[UseCase]:
         """
