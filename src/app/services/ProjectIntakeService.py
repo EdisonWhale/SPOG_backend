@@ -9,7 +9,7 @@ Flow: Router -> Service -> Repository -> AsyncDocumentRepository
 
 import logging
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from google.cloud.firestore import AsyncClient
 from app.models.project.Project import Project
 from app.models.project.DraftProject import DraftProject
@@ -25,8 +25,7 @@ from app.services.GitlabService import GitLabService
 from app.models.schemas.CommonSchemas import DuplicateAgentNameError, DuplicateProjectNameError
 from app.utils.helpers.common_helpers import assert_owner
 from app.enum import EnvironmentEnum
-
-
+from app.models.schemas.ProjectIntakeSchemas import PaginatedProjectsWithAgentsResponse, ProjectWithAgentsResponse
 from app.utils.cursor_utils import cursor_encoder
 
 logger = logging.getLogger(__name__)
@@ -218,8 +217,7 @@ class ProjectIntakeService:
         page_size: Optional[int] = None,
         cursor: Optional[str] = None,
         include_agents: bool = False,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> PaginatedProjectsWithAgentsResponse:
         """
         List published projects using cursor pagination.
 
@@ -245,48 +243,34 @@ class ProjectIntakeService:
         """
         try:
             # Same filters drive both the page and the total count.
-            projects, next_cursor, prev_cursor = await self.project_repo.get_all_paginated(
+            paginated_projects = await self.project_repo.get_all_projects_paginated(
                 page_size=page_size,
                 cursor=cursor,
-                filters=filters,
             )
-            total = await self.project_repo.count_all(filters=filters)
 
-            items: List[Dict[str, Any]] = []
-            for project in projects:
-                project_dict = project.to_dict(
-                    to_camel=True,
-                    date_format_iso=True,
-                    include_document_id=True,
-                )
+            items: List[ProjectWithAgentsResponse] = []
+            for project in paginated_projects.items:
                 if include_agents:
                     agents = await self.agent_repo.get_by_project(str(project.id))
                     items.append(
-                        {
-                            "project": project_dict,
-                            "agents": [
-                                agent.to_dict(
-                                    to_camel=True,
-                                    date_format_iso=True,
-                                    include_document_id=True,
-                                )
-                                for agent in agents
-                            ],
-                        }
+                        ProjectWithAgentsResponse(
+                            project=project,
+                            agents= agents,
+                        )
                     )
                 else:
-                    items.append(project_dict)
+                    items.append(ProjectWithAgentsResponse(project=project))
 
             logger.info(
-                f"Listed {len(items)} of {total} projects "
+                f"Listed {len(items)} of {paginated_projects.total} projects "
                 f"(include_agents={include_agents})"
             )
-            return {
-                "items": items,
-                "total": total,
-                "next_cursor": next_cursor,
-                "prev_cursor": prev_cursor,
-            }
+            return PaginatedProjectsWithAgentsResponse(
+                items=items,
+                total=paginated_projects.total,
+                next_cursor=paginated_projects.next_cursor,
+                prev_cursor=paginated_projects.prev_cursor,
+            )
         except Exception as e:
             logger.exception(f"Error listing projects: {str(e)}")
             raise
@@ -382,12 +366,12 @@ class ProjectIntakeService:
 
             total = len(matched)
             if total == 0:
-                return {
-                    "items": [],
-                    "total": 0,
-                    "next_cursor": None,
-                    "prev_cursor": None,
-                }
+                return PaginatedProjectsWithAgentsResponse(
+                    items=[],
+                    total=0,
+                    next_cursor=None,
+                    prev_cursor=None,
+                )
 
             # Stable ordering: newest first, tie-break by id for determinism.
             matched.sort(
@@ -428,42 +412,30 @@ class ProjectIntakeService:
                 else None
             )
 
-            items: List[Dict[str, Any]] = []
+            items: List[ProjectWithAgentsResponse] = []
             for project in page_projects:
-                project_dict = project.to_dict(
-                    to_camel=True,
-                    date_format_iso=True,
-                    include_document_id=True,
-                )
                 if include_agents:
                     project_agents = agents_by_project.get(str(project.id), [])
                     items.append(
-                        {
-                            "project": project_dict,
-                            "agents": [
-                                a.to_dict(
-                                    to_camel=True,
-                                    date_format_iso=True,
-                                    include_document_id=True,
-                                )
-                                for a in project_agents
-                            ],
-                        }
+                        ProjectWithAgentsResponse(
+                            project=project,
+                            agents=project_agents
+                        )
                     )
                 else:
-                    items.append(project_dict)
+                    items.append(ProjectWithAgentsResponse(project=project))
 
             logger.info(
                 f"Search '{term}' matched {total} projects; "
                 f"returning page {page} ({len(items)} items, "
                 f"include_agents={include_agents})"
             )
-            return {
-                "items": items,
-                "total": total,
-                "next_cursor": next_cursor,
-                "prev_cursor": prev_cursor,
-            }
+            return PaginatedProjectsWithAgentsResponse(
+                items=items,
+                total=total,
+                next_cursor=next_cursor,
+                prev_cursor=prev_cursor,
+            )
         except ValueError:
             raise
         except Exception as e:
